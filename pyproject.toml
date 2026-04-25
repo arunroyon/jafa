@@ -1,0 +1,113 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools_scm[toml]>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jafa"
+dynamic = ["version"]
+description = "JAFA — JWST Aromatic Feature Analyzer for spectral feature maps, continuum diagnostics, and ratio maps from IFU cubes."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+  {name = "Arun Roy"},
+]
+keywords = ["JWST", "MIRI", "NIRSpec", "PAH", "fullerene", "aromatic features", "spectral cube", "astronomy"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: English",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "astropy>=5.3",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+jwst = [
+  "spectral-cube>=0.6",
+  "reproject>=0.12",
+  "pybaselines>=1.2",
+]
+plot = [
+  "matplotlib>=3.7",
+]
+test = [
+  "pytest>=7.0",
+  "pytest-astropy>=0.11",
+  "pytest-doctestplus>=1.0",
+]
+docs = [
+  "sphinx>=7",
+  "sphinx-astropy>=1.9",
+  "numpydoc>=1.6",
+  "sphinx-automodapi>=0.16",
+]
+dev = [
+  "tox>=4",
+  "ruff>=0.5",
+  "pre-commit>=3",
+  "build>=1",
+  "twine>=5",
+  "setuptools_scm[toml]>=8",
+]
+all = [
+  "spectral-cube>=0.6",
+  "reproject>=0.12",
+  "pybaselines>=1.2",
+  "matplotlib>=3.7",
+  "pytest>=7.0",
+  "pytest-astropy>=0.11",
+  "pytest-doctestplus>=1.0",
+  "sphinx>=7",
+  "sphinx-astropy>=1.9",
+  "numpydoc>=1.6",
+  "sphinx-automodapi>=0.16",
+  "tox>=4",
+  "ruff>=0.5",
+  "pre-commit>=3",
+  "build>=1",
+  "twine>=5",
+  "setuptools_scm[toml]>=8",
+]
+
+[project.urls]
+Homepage = "https://github.com/arunroy/jafa"
+Documentation = "https://github.com/arunroy/jafa#readme"
+Repository = "https://github.com/arunroy/jafa"
+Issues = "https://github.com/arunroy/jafa/issues"
+
+[project.scripts]
+jafa = "jafa.cli:main"
+jwst-feature-map = "jafa.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+jafa = ["data/*.yaml"]
+
+[tool.setuptools_scm]
+write_to = "src/jafa/version.py"
+fallback_version = "0.1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
