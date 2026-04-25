@@ -1,3 +1,7 @@
+![JAFA banner](docs/assets/jafa_banner.png)
+
+<p align="center"><sub>Banner image credit: ChatGPT.</sub></p>
+
 # JAFA — JWST Aromatic Feature Analyzer
 
 JAFA — JWST Aromatic Feature Analyzer creates continuum-subtracted JWST IFU spectral feature maps from MIRI MRS and future NIRSpec IFU cubes. It is designed for PAH and fullerene bands, with feature windows and continuum anchors defined in editable YAML. The Python import package and primary CLI command are both `jafa`.
