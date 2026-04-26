@@ -396,7 +396,7 @@ def _integrate(wavelengths: np.ndarray, values: np.ndarray) -> float:
     finite = np.isfinite(wavelengths) & np.isfinite(values)
     if np.count_nonzero(finite) < 2:
         return np.nan
-    return float(np.trapz(values[finite], wavelengths[finite]))
+    return float(np.trapezoid(values[finite], wavelengths[finite]))
 
 
 def _integrate_scaled(wavelengths: np.ndarray, values: np.ndarray, scale: np.ndarray) -> float:
@@ -409,7 +409,7 @@ def _integrate_scaled(wavelengths: np.ndarray, values: np.ndarray, scale: np.nda
     x = wavelengths[finite]
     integrand = y[finite] * s[finite]
     order = np.argsort(x)
-    return float(np.trapz(integrand[order], x[order]))
+    return float(np.trapezoid(integrand[order], x[order]))
 
 
 def _integrate_flux(
@@ -450,7 +450,7 @@ def _integrate_cgs(wavelengths: np.ndarray, values: np.ndarray, cube: CubeData, 
     unit = _surface_brightness_unit(cube.flux_unit)
     y_cgs = (y * unit).to_value(u.erg / u.s / u.cm**2 / u.Hz / u.sr)
     frequency_hz = (c / (wl * u.micron)).to_value(u.Hz)
-    return float(np.trapz((y_cgs * area_factors)[::-1], frequency_hz[::-1]))
+    return float(np.trapezoid((y_cgs * area_factors)[::-1], frequency_hz[::-1]))
 
 
 def _integrated_uncertainty(
