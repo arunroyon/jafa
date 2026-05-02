@@ -16,14 +16,14 @@
 ## Findings summary
 - **Critical bugs:** none identified in audited paths.
 - **High severity:** none identified in audited paths.
-- **Medium severity:** one maintainability/forward-compatibility issue fixed (deprecated NumPy integration API usage).
+- **Medium severity:** one maintainability/forward-compatibility issue fixed (deprecated NumPy integration API usage on newer NumPy).
 - **Consistency status:** package rename transition appears consistent (`jafa` primary with `jwst_feature_mapper` compatibility layer).
 - **Scientific accuracy status (audited paths):** integration and error propagation choices are internally consistent with the package’s documented flux-density assumptions.
 
 ## Fixed in this audit
 ### 1) Deprecated numerical integration function
-- Replaced `np.trapz` with `np.trapezoid` in spectral integration helpers.
-- Why this matters: avoids NumPy deprecation warnings and future break risk without changing integration semantics.
+- Routed spectral integration helpers through a version-compatible trapezoid wrapper.
+- Why this matters: uses `np.trapezoid` on newer NumPy while retaining compatibility with older NumPy versions that only provide `np.trapz`, without changing integration semantics.
 
 ## Residual risks / recommendations before publication
 1. Add an explicit CI gate that fails on new deprecations (e.g., `-W error::DeprecationWarning` in a dedicated job) to prevent regression.
