@@ -99,7 +99,10 @@ def _add_panel_label(ax, label: str) -> None:
 def _save_figure(fig: plt.Figure, output_dir: Path, stem: str) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_dir / f"{stem}.png", dpi=300)
-    fig.savefig(output_dir / f"{stem}.pdf")
+    fig.savefig(
+        output_dir / f"{stem}.pdf",
+        metadata={"Creator": "JAFA publication gallery", "CreationDate": None, "ModDate": None},
+    )
     plt.close(fig)
 
 
@@ -156,7 +159,7 @@ def _add_star_direction(ax, wcs: WCS, star: SkyCoord) -> None:
     dx = -np.sin(position_angle)
     dy = np.cos(position_angle)
     origin = np.array([0.86, 0.88])
-    endpoint = origin + 0.115 * np.array([dx, dy])
+    endpoint = origin + 0.16 * np.array([dx, dy])
     ax.annotate(
         "",
         xy=endpoint,
@@ -166,8 +169,8 @@ def _add_star_direction(ax, wcs: WCS, star: SkyCoord) -> None:
             "arrowstyle": "-|>",
             "facecolor": "white",
             "edgecolor": "black",
-            "lw": 1.2,
-            "mutation_scale": 13,
+            "lw": 1.5,
+            "mutation_scale": 18,
         },
     )
     ax.text(
