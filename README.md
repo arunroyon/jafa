@@ -32,11 +32,11 @@ version or commit and report the feature definition and map settings used.
 
 ## Example Products
 
-TC 1 C60 18.9 um continuum diagnostic:
+Tc 1 C60 18.9 um integrated-flux map and statistical uncertainty:
 
 ![TC 1 C60 18.9 um diagnostic](examples/gallery/tc1_c60_18p9_diagnostic.png)
 
-NGC 7023 PAH 11.0/11.2 ratio map:
+NGC 7023 NW ionization-sensitive PAH 11.0/11.2 ratio map:
 
 ![NGC 7023 PAH 11.0 over 11.2 ratio](examples/gallery/ngc7023_pah_11p0_over_11p2_ratio.png)
 

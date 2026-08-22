@@ -239,6 +239,25 @@ def test_feature_map_masks_low_weight_edge_and_erodes_once():
     assert result.metadata["masking"]["pixels_removed_by_erosion"] == 16
 
 
+def test_diagnostic_spectrum_uses_retained_science_footprint():
+    weight = np.ones((6, 5, 5), dtype=float)
+    weight[:, 0, :] = 0.1
+    weight[:, -1, :] = 0.1
+    weight[:, :, 0] = 0.1
+    weight[:, :, -1] = 0.1
+    cube = _edge_test_cube(size=5, weight=weight)
+    cube.data[:, 0, :] = 100.0
+    cube.data[:, -1, :] = 100.0
+    cube.data[:, :, 0] = 100.0
+    cube.data[:, :, -1] = 100.0
+
+    result = make_feature_map([cube], _edge_test_feature(), settings=_edge_test_settings(), write_outputs=False)
+
+    assert result.valid_mask is not None
+    assert np.count_nonzero(result.valid_mask) == 9
+    assert np.allclose(result.diagnostic["spectrum"], np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0]))
+
+
 def test_feature_map_rejects_incomplete_anchor_span():
     cube = _edge_test_cube(size=5)
     cube.data[:, 0, 0] = np.nan

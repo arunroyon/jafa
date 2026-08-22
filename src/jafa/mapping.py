@@ -401,7 +401,16 @@ def make_feature_map_from_cube(cube: CubeData, feature: FeatureDefinition, *, se
 
     header = binned_spatial_header(cube.spatial_header, bin_size)
     unit = _integrated_unit(cube.flux_unit, cube.pixel_area_sr is not None, settings.output_unit)
-    diagnostic = _diagnostic_fit(cube, feature, fit_feature, finite_wave_mask, wavelengths, settings, continuum_settings)
+    diagnostic = _diagnostic_fit(
+        cube,
+        feature,
+        fit_feature,
+        finite_wave_mask,
+        wavelengths,
+        settings,
+        continuum_settings,
+        valid_mask,
+    )
     metadata = _metadata(
         cube,
         feature,
@@ -754,8 +763,19 @@ def _diagnostic_fit(
     wavelengths: np.ndarray,
     settings: MapSettings,
     continuum_settings: ContinuumSettings,
+    spatial_mask: np.ndarray,
 ) -> dict[str, np.ndarray]:
-    data = cube.data[work_mask, :, :]
+    voxel_valid = cube.valid_voxel_mask(bad_dq_bits=settings.dq_bad_bits)[work_mask, :, :]
+    selected = np.zeros(cube.spatial_shape, dtype=bool)
+    expanded = np.repeat(
+        np.repeat(np.asarray(spatial_mask, dtype=bool), settings.bin_spatial, axis=0),
+        settings.bin_spatial,
+        axis=1,
+    )
+    ny = min(selected.shape[0], expanded.shape[0])
+    nx = min(selected.shape[1], expanded.shape[1])
+    selected[:ny, :nx] = expanded[:ny, :nx]
+    data = np.where(voxel_valid & selected[None, :, :], cube.data[work_mask, :, :], np.nan)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         spectrum = np.nanmedian(data, axis=(1, 2))
