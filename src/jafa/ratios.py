@@ -20,7 +20,7 @@ from .mapping import (
     write_feature_map_outputs,
 )
 from .plotting import plot_ratio_map
-from .reprojection import reproject_map, reproject_uncertainty
+from .reprojection import reproject_map, reproject_mask, reproject_uncertainty
 from .utils import ensure_dir, get_logger, same_celestial_grid, sanitize_name
 from .version import __version__
 
@@ -39,6 +39,7 @@ class RatioMapResult:
     ratio_uncertainty: np.ndarray | None
     header: fits.Header
     metadata: dict
+    valid_mask: np.ndarray | None = None
     output_paths: dict[str, Path] = field(default_factory=dict)
 
 
@@ -63,6 +64,8 @@ def make_ratio_map(
     same_grid = selected1 is selected2 or same_celestial_grid(num.header, num.feature_map.shape, den.header, den.feature_map.shape)
 
     reprojection_note = "same_cube_or_grid"
+    num_mask = num.valid_mask if num.valid_mask is not None else np.isfinite(num.feature_map)
+    den_mask = den.valid_mask if den.valid_mask is not None else np.isfinite(den.feature_map)
     if same_grid:
         num_map, den_map = num.feature_map, den.feature_map
         num_unc, den_unc = num.uncertainty, den.uncertainty
@@ -75,6 +78,7 @@ def make_ratio_map(
             num_map, num_unc = num.feature_map, num.uncertainty
             den_map = reproject_map(den.feature_map, den.header, header, target_shape).data
             den_unc = reproject_uncertainty(den.uncertainty, den.header, header, target_shape).data if den.uncertainty is not None else None
+            den_mask = np.asarray(reproject_mask(den_mask, den.header, header, target_shape).data, dtype=bool)
             reprojection_note = f"{feature2.feature_name}_reprojected_to_{feature1.feature_name}_grid"
         else:
             header = den.header
@@ -82,17 +86,21 @@ def make_ratio_map(
             den_map, den_unc = den.feature_map, den.uncertainty
             num_map = reproject_map(num.feature_map, num.header, header, target_shape).data
             num_unc = reproject_uncertainty(num.uncertainty, num.header, header, target_shape).data if num.uncertainty is not None else None
+            num_mask = np.asarray(reproject_mask(num_mask, num.header, header, target_shape).data, dtype=bool)
             reprojection_note = f"{feature1.feature_name}_reprojected_to_{feature2.feature_name}_grid"
 
+    common_mask = np.asarray(num_mask, dtype=bool) & np.asarray(den_mask, dtype=bool)
     ratio, ratio_unc = compute_ratio(
         num_map,
         den_map,
         numerator_uncertainty=num_unc,
         denominator_uncertainty=den_unc,
         snr_threshold=settings.snr_threshold,
+        valid_mask=common_mask,
     )
-    metadata = _ratio_metadata(num, den, reprojection_note)
-    result = RatioMapResult(feature1, feature2, num, den, ratio, ratio_unc, header, metadata)
+    common_mask &= np.isfinite(ratio)
+    metadata = _ratio_metadata(num, den, reprojection_note, common_mask)
+    result = RatioMapResult(feature1, feature2, num, den, ratio, ratio_unc, header, metadata, valid_mask=common_mask)
     if write_outputs:
         if outdir is None:
             raise ValueError("outdir is required when write_outputs=True.")
@@ -107,12 +115,18 @@ def compute_ratio(
     numerator_uncertainty: np.ndarray | None = None,
     denominator_uncertainty: np.ndarray | None = None,
     snr_threshold: float | None = None,
+    valid_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Compute a masked ratio and propagate uncertainty when available."""
 
     num = np.asarray(numerator, dtype=float)
     den = np.asarray(denominator, dtype=float)
     valid = np.isfinite(num) & np.isfinite(den) & (den > 0)
+    if valid_mask is not None:
+        mask = np.asarray(valid_mask, dtype=bool)
+        if mask.shape != valid.shape:
+            raise ValueError("valid_mask must match the ratio-map shape.")
+        valid &= mask
 
     if snr_threshold is not None:
         if numerator_uncertainty is not None:
@@ -153,6 +167,14 @@ def write_ratio_outputs(result: RatioMapResult, outdir: str | Path, *, write_int
     paths["ratio"] = save_fits_product(result.ratio, result.header, outdir / f"{stem}_ratio.fits", bunit="ratio", metadata={"RATIO": stem})
     if result.ratio_uncertainty is not None:
         paths["ratio_uncertainty"] = save_fits_product(result.ratio_uncertainty, result.header, outdir / f"{stem}_ratio_unc.fits", bunit="ratio", metadata={"RATIO": stem})
+    if result.valid_mask is not None:
+        paths["mask"] = save_fits_product(
+            result.valid_mask.astype(np.uint8),
+            result.header,
+            outdir / f"{stem}_mask.fits",
+            bunit="mask",
+            metadata={"RATIO": stem},
+        )
     paths["figure"] = plot_ratio_map(result.ratio, outdir / f"{stem}_ratio.png", title=stem.replace("_", " "), header=result.header)
     metadata_path = outdir / f"{stem}_metadata.yaml"
     with metadata_path.open("w", encoding="utf-8") as handle:
@@ -162,14 +184,16 @@ def write_ratio_outputs(result: RatioMapResult, outdir: str | Path, *, write_int
     return paths
 
 
-def _ratio_metadata(num: FeatureMapResult, den: FeatureMapResult, reprojection_note: str) -> dict:
+def _ratio_metadata(num: FeatureMapResult, den: FeatureMapResult, reprojection_note: str, valid_mask: np.ndarray) -> dict:
     return {
         "software": {"name": "JAFA", "full_name": "JWST Aromatic Feature Analyzer", "package": "jafa", "version": __version__},
         "ratio": {
             "numerator": num.feature.feature_name,
             "denominator": den.feature.feature_name,
             "reprojection": reprojection_note,
-            "masking": "denominator must be finite and positive; SNR thresholds applied when uncertainties are available",
+            "masking": "intersection of feature science masks; denominator finite and positive; optional SNR threshold",
+            "valid_pixels": int(np.count_nonzero(valid_mask)),
+            "total_pixels": int(valid_mask.size),
         },
         "numerator_metadata": num.metadata,
         "denominator_metadata": den.metadata,

@@ -88,6 +88,10 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--snr-threshold", type=float, help="Mask pixels below this SNR when uncertainties are available.")
     parser.add_argument("--morph-half-window", type=int, help="Morphology baseline half-window in spectral pixels.")
     parser.add_argument("--bin-spatial", type=int, default=None, help="Integer spatial binning factor.")
+    parser.add_argument("--min-feature-coverage", type=float, help="Minimum finite spectral fraction inside the feature window.")
+    parser.add_argument("--min-required-coverage", type=float, help="Minimum finite spectral fraction across the feature and anchor span.")
+    parser.add_argument("--min-relative-weight", type=float, help="Minimum median WMAP weight relative to each plane median.")
+    parser.add_argument("--edge-erosion-pixels", type=int, help="Number of output-grid pixels removed from footprint edges.")
     parser.add_argument(
         "--output-unit",
         choices=("cgs", "native"),
@@ -114,6 +118,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Keep pixels that are only covered by one source cube in a stitched product.",
     )
+    parser.add_argument("--stitch-min-spatial-coverage", type=float, help="Minimum valid spectral fraction used for stitched footprints.")
     parser.add_argument("--no-clip-negative", action="store_true", help="Allow negative integrated residual fluxes.")
     parser.add_argument("--quiet", action="store_true", help="Show warnings and errors only.")
     parser.add_argument("--verbose", action="store_true", help="Show detailed log messages.")
@@ -135,6 +140,14 @@ def _settings_from_args(args: argparse.Namespace, config: dict) -> MapSettings:
         settings.clip_negative_residuals = False
     if args.bin_spatial is not None:
         settings.bin_spatial = args.bin_spatial
+    if args.min_feature_coverage is not None:
+        settings.min_feature_coverage = args.min_feature_coverage
+    if args.min_required_coverage is not None:
+        settings.min_required_coverage = args.min_required_coverage
+    if args.min_relative_weight is not None:
+        settings.min_relative_weight = args.min_relative_weight
+    if args.edge_erosion_pixels is not None:
+        settings.edge_erosion_pixels = args.edge_erosion_pixels
     if args.output_unit is not None:
         settings.output_unit = args.output_unit
     if args.no_stitch_cubes:
@@ -145,6 +158,8 @@ def _settings_from_args(args: argparse.Namespace, config: dict) -> MapSettings:
         settings.stitching.overlap_strategy = args.stitch_overlap
     if args.allow_noncommon_stitch_footprint:
         settings.stitching.require_common_spatial_footprint = False
+    if args.stitch_min_spatial_coverage is not None:
+        settings.stitching.min_spatial_coverage = args.stitch_min_spatial_coverage
     if args.continuum_mode is not None:
         settings.continuum.mode = args.continuum_mode
     if args.morph_half_window is not None:

@@ -7,7 +7,7 @@ from astropy.io import fits
 from jafa.continuum import ContinuumFit
 from jafa.feature_db import FeatureDefinition, load_feature_database
 from jafa.io import CubeData
-from jafa.mapping import MapSettings, _integrate_flux, make_feature_map
+from jafa.mapping import MapSettings, _integrate_flux, make_feature_map, write_feature_map_outputs
 
 
 def test_make_feature_map_on_synthetic_cube():
@@ -185,3 +185,83 @@ def test_feature_continuum_mode_controls_runtime_fitting(monkeypatch):
     assert calls
     assert set(calls) == {"spline"}
     assert result.metadata["settings"]["continuum_mode"] == "spline"
+
+
+def _edge_test_feature() -> FeatureDefinition:
+    return FeatureDefinition(
+        feature_name="edge_test",
+        central_wavelength=3.5,
+        integration_window=(3.0, 4.0),
+        continuum_mode="spline",
+        continuum_anchor_points=(1.0, 6.0),
+    )
+
+
+def _edge_test_settings() -> MapSettings:
+    settings = MapSettings(progress=False, output_unit="native")
+    settings.continuum.mode = "spline"
+    settings.continuum.min_finite = 2
+    settings.continuum.min_anchor_points = 2
+    settings.continuum.fallback_anchor_count = 2
+    settings.continuum.include_edge_anchors = False
+    settings.clip_negative_residuals = False
+    return settings
+
+
+def _edge_test_cube(*, size: int = 7, weight: np.ndarray | None = None) -> CubeData:
+    spectrum = np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0])
+    data = np.repeat(spectrum[:, None, None], size, axis=1).repeat(size, axis=2)
+    return CubeData(
+        path=None,
+        data=data,
+        weight=weight,
+        wavelength_um=np.arange(1.0, 7.0),
+        header=fits.Header(),
+        flux_unit="MJy/sr",
+        pixel_area_sr=1.0,
+    )
+
+
+def test_feature_map_masks_low_weight_edge_and_erodes_once():
+    weight = np.ones((6, 7, 7), dtype=float)
+    weight[:, 0, :] = 0.1
+    weight[:, -1, :] = 0.1
+    weight[:, :, 0] = 0.1
+    weight[:, :, -1] = 0.1
+
+    result = make_feature_map([_edge_test_cube(weight=weight)], _edge_test_feature(), settings=_edge_test_settings(), write_outputs=False)
+
+    assert result.valid_mask is not None
+    assert np.count_nonzero(result.valid_mask) == 9
+    assert np.all(result.valid_mask[2:5, 2:5])
+    assert np.all(np.isnan(result.feature_map[~result.valid_mask]))
+    assert result.metadata["masking"]["pixels_before_erosion"] == 25
+    assert result.metadata["masking"]["pixels_removed_by_erosion"] == 16
+
+
+def test_feature_map_rejects_incomplete_anchor_span():
+    cube = _edge_test_cube(size=5)
+    cube.data[:, 0, 0] = np.nan
+    cube.data[2:4, 0, 0] = 1.0
+    settings = _edge_test_settings()
+    settings.edge_erosion_pixels = 0
+
+    result = make_feature_map([cube], _edge_test_feature(), settings=settings, write_outputs=False)
+
+    assert result.coverage_map is not None
+    assert result.coverage_map[0, 0] < settings.min_required_coverage
+    assert result.valid_mask is not None
+    assert not result.valid_mask[0, 0]
+    assert np.isnan(result.feature_map[0, 0])
+
+
+def test_feature_map_writes_mask_and_coverage_products(tmp_path):
+    result = make_feature_map([_edge_test_cube(size=5)], _edge_test_feature(), settings=_edge_test_settings(), write_outputs=False)
+
+    paths = write_feature_map_outputs(result, tmp_path)
+
+    assert paths["mask"].exists()
+    assert paths["coverage"].exists()
+    with fits.open(paths["mask"]) as hdul:
+        assert hdul[0].data.dtype.kind in {"u", "i"}
+        assert set(np.unique(hdul[0].data)) <= {0, 1}

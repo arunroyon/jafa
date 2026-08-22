@@ -100,9 +100,14 @@ def test_settings_from_config_accepts_documented_settings():
                 "min_anchor_points": 3,
                 "fallback_anchor_count": 5,
                 "include_edge_anchors": False,
+                "min_feature_coverage": 0.9,
+                "min_required_coverage": 0.85,
+                "min_relative_weight": 0.2,
+                "edge_erosion_pixels": 2,
                 "output_unit": "native",
                 "stitch_spectral_gap_tolerance_um": 0.01,
                 "stitch_overlap_strategy": "keep",
+                "stitch_min_spatial_coverage": 0.9,
                 "stitch_require_common_spatial_footprint": False,
             }
         },
@@ -115,8 +120,13 @@ def test_settings_from_config_accepts_documented_settings():
     assert settings.continuum.min_anchor_points == 3
     assert settings.continuum.fallback_anchor_count == 5
     assert settings.continuum.include_edge_anchors is False
+    assert settings.min_feature_coverage == 0.9
+    assert settings.min_required_coverage == 0.85
+    assert settings.min_relative_weight == 0.2
+    assert settings.edge_erosion_pixels == 2
     assert settings.stitching.spectral_gap_tolerance_um == 0.01
     assert settings.stitching.overlap_strategy == "keep"
+    assert settings.stitching.min_spatial_coverage == 0.9
     assert settings.stitching.require_common_spatial_footprint is False
 
 

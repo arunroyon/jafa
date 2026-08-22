@@ -97,17 +97,15 @@ spectra such as ``MJy/sr`` are converted to
 
 The frequency grid is computed from each sampled wavelength, so this is an
 exact trapezoidal frequency integration rather than a central-wavelength scale
-factor. The resulting FITS map unit is ``erg s-1 cm-2 pixel-1``. This
-implements the cgs conversion that the older plotting notebook performed only
-when making figures.
+factor. The resulting FITS map unit is ``erg s-1 cm-2 pixel-1``.
 The integration uses sampled cube wavelengths inside the feature window and
 does not currently interpolate residual values onto exact window boundaries.
 For spatially binned products, each wavelength slice is scaled by the number
 of finite pixels that actually contributed to that slice, so partial-NaN bins
 do not inflate the integrated flux.
 
-The legacy ``output_unit="native"`` mode remains available and integrates the
-residual over wavelength in the cube's native flux-density units, for example
+The optional ``output_unit="native"`` mode integrates the residual over
+wavelength in the cube's native flux-density units, for example
 ``MJy um`` after pixel-area scaling. Negative integrated values are clipped to
 zero by default and can be preserved with ``--no-clip-negative``.
 
@@ -133,10 +131,20 @@ integrated fluxes rather than ``MJy um`` surface-brightness integrals.
 Masking
 -------
 
-Ratio pixels are masked when numerator or denominator values are non-finite, or
-when the denominator is zero or negative. Optional SNR cuts are applied when
-uncertainty maps are present. Reprojected maps are masked by the reprojection
-footprint.
+For JWST ``s3d`` cubes, voxels carrying ``DO_NOT_USE`` or ``NON_SCIENCE`` DQ
+bits, zero WMAP weight, or non-finite science values are rejected before the
+continuum fit. Each output pixel must meet the configured finite-sample
+fractions in both the feature window and the full feature-plus-anchor span.
+WMAP values are normalized by the valid median in each wavelength plane; the
+median relative weight across the required span must meet
+``min_relative_weight``. The resulting footprint is eroded by
+``edge_erosion_pixels``.
+
+Ratio masks are the intersection of the two feature science masks. Masks are
+reprojected with nearest-neighbor interpolation, while science and variance
+continue to use bilinear interpolation. Ratio pixels are also rejected when
+the denominator is zero or negative. Optional SNR cuts are applied separately
+when uncertainty maps are present.
 
 Limitations
 -----------

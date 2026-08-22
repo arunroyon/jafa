@@ -42,6 +42,9 @@ class StitchSettings:
     require_common_spatial_footprint
         Set pixels outside the common spatial footprint of all stitched cubes
         to NaN across every wavelength plane.
+    min_spatial_coverage
+        Minimum finite spectral-plane fraction required for a source cube to
+        contribute a pixel to the common spatial footprint.
     reprojection_method
         Reprojection method passed to :func:`jafa.reprojection.reproject_map`.
     """
@@ -51,6 +54,7 @@ class StitchSettings:
     target_grid: str = "coarser"
     overlap_strategy: str = "split"
     require_common_spatial_footprint: bool = True
+    min_spatial_coverage: float = 0.95
     reprojection_method: str = "interp"
 
     @classmethod
@@ -66,6 +70,8 @@ class StitchSettings:
             settings.overlap_strategy = str(payload["stitch_overlap_strategy"])
         if "stitch_require_common_spatial_footprint" in payload:
             settings.require_common_spatial_footprint = bool(payload["stitch_require_common_spatial_footprint"])
+        if "stitch_min_spatial_coverage" in payload:
+            settings.min_spatial_coverage = float(payload["stitch_min_spatial_coverage"])
         if "stitch_reprojection_method" in payload:
             settings.reprojection_method = str(payload["stitch_reprojection_method"])
         settings.validate()
@@ -82,6 +88,8 @@ class StitchSettings:
             raise ValueError("stitch_overlap_strategy must be 'split' or 'keep'.")
         if self.reprojection_method != "interp":
             raise ValueError("Only interpolation reprojection is currently implemented.")
+        if self.min_spatial_coverage < 0 or self.min_spatial_coverage > 1:
+            raise ValueError("stitch_min_spatial_coverage must be between 0 and 1.")
 
 
 def stitch_adjacent_cubes_for_feature(
@@ -233,12 +241,14 @@ def stitch_cubes(
     wavelengths: list[np.ndarray] = []
     data_blocks: list[np.ndarray] = []
     uncertainty_blocks: list[np.ndarray] = []
+    weight_blocks: list[np.ndarray] = []
     spatial_footprints: list[np.ndarray] = []
     have_all_uncertainties = all(cube.uncertainty is not None for cube in ordered)
+    have_all_weights = all(cube.weight is not None for cube in ordered)
 
     for cube, keep_mask in zip(ordered, keep_masks, strict=True):
         scale = _unit_scale(cube.flux_unit, target_flux_unit)
-        data, uncertainty, spatial_footprint = _cube_on_target_grid(cube, target, target_header, target_shape, settings)
+        data, uncertainty, weight, spatial_footprint = _cube_on_target_grid(cube, target, target_header, target_shape, settings)
         wavelengths.append(np.asarray(cube.wavelength_um, dtype=float)[keep_mask])
         data_blocks.append(data[keep_mask] * scale)
         spatial_footprints.append(spatial_footprint)
@@ -246,6 +256,8 @@ def stitch_cubes(
             uncertainty_blocks.append(uncertainty[keep_mask] * scale)
         elif cube.uncertainty is not None:
             LOG.warning("Dropping stitched uncertainty because not all source cubes provide uncertainty.")
+        if have_all_weights and weight is not None:
+            weight_blocks.append(weight[keep_mask])
 
     common_footprint_fraction = None
     if settings.require_common_spatial_footprint:
@@ -257,12 +269,15 @@ def stitch_cubes(
             block[:, ~common_spatial_footprint] = np.nan
         for block in uncertainty_blocks:
             block[:, ~common_spatial_footprint] = np.nan
+        for block in weight_blocks:
+            block[:, ~common_spatial_footprint] = np.nan
         LOG.info("Retained %.1f percent of target pixels in stitched common footprint.", 100.0 * common_footprint_fraction)
 
     wavelength_um = np.concatenate(wavelengths)
     data = np.concatenate(data_blocks, axis=0)
     uncertainty = np.concatenate(uncertainty_blocks, axis=0) if have_all_uncertainties else None
-    wavelength_um, data, uncertainty = _sort_and_merge_duplicate_wavelengths(wavelength_um, data, uncertainty)
+    weight = np.concatenate(weight_blocks, axis=0) if have_all_weights else None
+    wavelength_um, data, uncertainty, weight = _sort_and_merge_duplicate_wavelengths(wavelength_um, data, uncertainty, weight)
 
     source_names = tuple(cube.name for cube in ordered)
     LOG.info(
@@ -277,6 +292,7 @@ def stitch_cubes(
         path=None,
         data=data,
         uncertainty=uncertainty,
+        weight=weight,
         wavelength_um=wavelength_um,
         wcs_2d=target.wcs_2d,
         header=target.header,
@@ -360,31 +376,39 @@ def _cube_on_target_grid(
     target_header: fits.Header,
     target_shape: tuple[int, int],
     settings: StitchSettings,
-) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray]:
+    valid = cube.valid_voxel_mask()
+    source_data = np.where(valid, cube.data, np.nan)
+    source_uncertainty = np.where(valid, cube.uncertainty, np.nan) if cube.uncertainty is not None else None
+    source_weight = np.where(valid, cube.weight, np.nan) if cube.weight is not None else None
     if cube is target:
-        return cube.data, cube.uncertainty, _native_spatial_footprint(cube.data)
+        return source_data, source_uncertainty, source_weight, _native_spatial_footprint(source_data, settings.min_spatial_coverage)
     if _same_grid(cube.spatial_header, target_header, cube.spatial_shape, target_shape):
-        return cube.data, cube.uncertainty, _native_spatial_footprint(cube.data)
+        return source_data, source_uncertainty, source_weight, _native_spatial_footprint(source_data, settings.min_spatial_coverage)
 
     source_header = cube.spatial_header
     data = np.full((cube.data.shape[0], *target_shape), np.nan, dtype=float)
-    footprints = np.full_like(data, np.nan)
-    for idx, plane in enumerate(cube.data):
+    for idx, plane in enumerate(source_data):
         reprojected = reproject_map(plane, source_header, target_header, target_shape, method=settings.reprojection_method)
         data[idx] = reprojected.data
-        footprints[idx] = reprojected.footprint
 
     uncertainty = None
-    if cube.uncertainty is not None:
+    if source_uncertainty is not None:
         uncertainty = np.full_like(data, np.nan)
-        for idx, plane in enumerate(cube.uncertainty):
+        for idx, plane in enumerate(source_uncertainty):
             uncertainty[idx] = reproject_uncertainty(plane, source_header, target_header, target_shape, method=settings.reprojection_method).data
-    return data, uncertainty, np.nanmedian(footprints, axis=0) > 0
+
+    weight = None
+    if source_weight is not None:
+        weight = np.full_like(data, np.nan)
+        for idx, plane in enumerate(source_weight):
+            weight[idx] = reproject_map(plane, source_header, target_header, target_shape, method=settings.reprojection_method).data
+    spatial_footprint = np.mean(np.isfinite(data), axis=0) >= settings.min_spatial_coverage
+    return data, uncertainty, weight, spatial_footprint
 
 
-def _native_spatial_footprint(data: np.ndarray) -> np.ndarray:
-    with np.errstate(invalid="ignore"):
-        return np.any(np.isfinite(data), axis=0)
+def _native_spatial_footprint(data: np.ndarray, min_coverage: float) -> np.ndarray:
+    return np.mean(np.isfinite(data), axis=0) >= min_coverage
 
 
 def _same_grid(
@@ -400,23 +424,30 @@ def _sort_and_merge_duplicate_wavelengths(
     wavelength_um: np.ndarray,
     data: np.ndarray,
     uncertainty: np.ndarray | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    weight: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     order = np.argsort(wavelength_um)
     wavelength_um = np.asarray(wavelength_um[order], dtype=float)
     data = data[order]
     if uncertainty is not None:
         uncertainty = uncertainty[order]
+    if weight is not None:
+        weight = weight[order]
 
     unique, inverse, counts = np.unique(wavelength_um, return_inverse=True, return_counts=True)
     if np.all(counts == 1):
-        return wavelength_um, data, uncertainty
+        return wavelength_um, data, uncertainty, weight
 
     merged_data = np.full((unique.size, *data.shape[1:]), np.nan, dtype=float)
     merged_uncertainty = np.full_like(merged_data, np.nan) if uncertainty is not None else None
+    merged_weight = np.full_like(merged_data, np.nan) if weight is not None else None
     for idx in range(unique.size):
         mask = inverse == idx
         with np.errstate(invalid="ignore"):
             merged_data[idx] = np.nanmean(data[mask], axis=0)
         if uncertainty is not None and merged_uncertainty is not None:
             merged_uncertainty[idx] = np.sqrt(np.nansum(uncertainty[mask] ** 2, axis=0)) / np.count_nonzero(mask)
-    return unique, merged_data, merged_uncertainty
+        if weight is not None and merged_weight is not None:
+            with np.errstate(invalid="ignore"):
+                merged_weight[idx] = np.nanmean(weight[mask], axis=0)
+    return unique, merged_data, merged_uncertainty, merged_weight

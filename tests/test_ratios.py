@@ -85,7 +85,11 @@ def test_ratio_map_reprojects_same_shape_different_wcs(monkeypatch):
         calls.append((source_header, target_header, target_shape, method))
         return ReprojectedMap(data=np.asarray(data, dtype=float), footprint=np.ones(target_shape, dtype=float))
 
+    def fake_reproject_mask(data, source_header, target_header, target_shape):
+        return ReprojectedMap(data=np.asarray(data, dtype=bool), footprint=np.ones(target_shape, dtype=float))
+
     monkeypatch.setattr("jafa.ratios.reproject_map", fake_reproject_map)
+    monkeypatch.setattr("jafa.ratios.reproject_mask", fake_reproject_mask)
     wl1 = np.array([1.0, 2.0, 3.0, 4.0])
     wl2 = np.array([5.0, 6.0, 7.0, 8.0])
     spec1 = np.array([0.0, 1.0, 1.0, 0.0])

@@ -114,6 +114,25 @@ def test_stitching_masks_to_common_spatial_footprint():
     assert np.all(np.isfinite(stitched.data[:, :, :-1]))
 
 
+def test_stitching_preserves_weight_maps_for_feature_masking():
+    blue = _cube("blue", np.linspace(1.0, 2.0, 8), 1.0)
+    red = _cube("red", np.linspace(1.8, 3.0, 8), 2.0)
+    blue.weight = np.ones_like(blue.data)
+    red.weight = np.full_like(red.data, 2.0)
+    feature = FeatureDefinition(
+        feature_name="joined",
+        central_wavelength=2.0,
+        integration_window=(1.5, 2.5),
+        continuum_anchor_points=(1.0, 3.0),
+    )
+
+    stitched = stitch_adjacent_cubes_for_feature([blue, red], feature)
+
+    assert stitched.weight is not None
+    assert stitched.weight.shape == stitched.data.shape
+    assert np.all(np.isfinite(stitched.weight))
+
+
 def test_select_adjacent_cube_sequence_can_use_three_cubes():
     blue = _cube("blue", np.linspace(6.5, 7.65, 8), 1.0)
     middle = _cube("middle", np.linspace(7.51, 8.77, 8), 2.0)

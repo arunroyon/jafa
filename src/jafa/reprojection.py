@@ -79,3 +79,23 @@ def reproject_uncertainty(
     variance = np.asarray(uncertainty, dtype=float) ** 2
     rep = reproject_map(variance, source_header, target_header, target_shape, method=method)
     return ReprojectedMap(data=np.sqrt(rep.data), footprint=rep.footprint)
+
+
+def reproject_mask(
+    mask: np.ndarray,
+    source_header: fits.Header,
+    target_header: fits.Header,
+    target_shape: tuple[int, int],
+) -> ReprojectedMap:
+    """Reproject a boolean science mask using nearest-neighbor interpolation."""
+
+    reproject = require_dependency("reproject", extra="jwst", purpose="science-mask reprojection")
+    result, footprint = reproject.reproject_interp(
+        (np.asarray(mask, dtype=float), source_header),
+        target_header,
+        shape_out=target_shape,
+        order="nearest-neighbor",
+    )
+    footprint = np.asarray(footprint, dtype=float)
+    valid = np.isfinite(result) & (np.asarray(result, dtype=float) >= 0.5) & (footprint > 0)
+    return ReprojectedMap(data=valid, footprint=footprint)

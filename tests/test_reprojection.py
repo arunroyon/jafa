@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from jafa.reprojection import reproject_map, reproject_uncertainty
+from jafa.reprojection import reproject_map, reproject_mask, reproject_uncertainty
 
 pytest.importorskip("reproject")
 
@@ -40,3 +40,13 @@ def test_reproject_uncertainty_uses_variance():
     rep = reproject_uncertainty(uncertainty, header, header, uncertainty.shape)
     assert np.nanmedian(rep.data) == pytest.approx(2.0)
 
+
+def test_reproject_mask_uses_nearest_neighbor_and_stays_boolean():
+    mask = np.ones((4, 4), dtype=bool)
+    mask[0, :] = False
+    header = _header()
+
+    rep = reproject_mask(mask, header, header, mask.shape)
+
+    assert rep.data.dtype == bool
+    assert np.array_equal(rep.data, mask)

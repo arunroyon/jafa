@@ -36,6 +36,37 @@ def test_load_cube_astropy_fallback_reads_wavelength_quantity(tmp_path):
     assert np.allclose(cube.wavelength_um, [5.0, 5.1, 5.2, 5.3])
     assert str(cube.wavelength.unit) == "micron"
     assert cube.flux_unit_object is not None
+    assert cube.uncertainty is None
+    assert cube.dq is None
+    assert cube.weight is None
+
+
+def test_load_cube_preserves_dq_and_weight_quality(tmp_path):
+    path = tmp_path / "quality_cube.fits"
+    data = np.ones((4, 3, 3), dtype=float)
+    err = np.full_like(data, 0.1)
+    dq = np.zeros(data.shape, dtype=np.uint32)
+    weight = np.ones_like(data)
+    dq[:, 0, 0] = 513
+    weight[:, 0, 1] = 0.0
+    fits.HDUList(
+        [
+            fits.PrimaryHDU(),
+            fits.ImageHDU(data, header=_simple_cube_header(), name="SCI"),
+            fits.ImageHDU(err, name="ERR"),
+            fits.ImageHDU(dq, name="DQ"),
+            fits.ImageHDU(weight, name="WMAP"),
+        ]
+    ).writeto(path)
+
+    cube = load_cube(path, use_spectral_cube=False)
+    valid = cube.valid_voxel_mask()
+
+    assert cube.dq is not None
+    assert cube.weight is not None
+    assert np.all(~valid[:, 0, 0])
+    assert np.all(~valid[:, 0, 1])
+    assert np.all(valid[:, 1:, :])
 
 
 def test_save_fits_product_and_binned_header(tmp_path):
@@ -52,4 +83,3 @@ def test_save_fits_product_and_binned_header(tmp_path):
     with fits.open(path) as hdul:
         assert hdul[0].header["BUNIT"] == "MJy um"
         assert hdul[0].data.shape == (2, 2)
-

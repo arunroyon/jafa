@@ -44,10 +44,15 @@ Config files can include settings:
      snr_threshold: null
      clip_negative_residuals: true
      bin_spatial: 1
+     min_feature_coverage: 0.95
+     min_required_coverage: 0.95
+     min_relative_weight: 0.25
+     edge_erosion_pixels: 1
      output_unit: cgs
      allow_cube_stitching: true
      stitch_spectral_gap_tolerance_um: 0.0
      stitch_overlap_strategy: split
+     stitch_min_spatial_coverage: 0.95
      stitch_require_common_spatial_footprint: true
 
 They can also include feature overrides under a top-level ``features`` block.
@@ -66,3 +71,12 @@ only for debugging or specialized workflows.
 ``stitch_require_common_spatial_footprint`` masks stitched products to pixels
 covered by all source cubes. This avoids fitting a continuum from a spectrum
 that only exists in one channel.
+
+Spatial edge masking uses the feature-window and full anchor-span coverage
+fractions together with the JWST ``WMAP`` extension when available. WMAP is
+normalized by the valid median in each wavelength plane before applying
+``min_relative_weight``. The resulting footprint is eroded by
+``edge_erosion_pixels`` and written alongside each map as mask, coverage, and
+relative-weight FITS products. Thresholds should be varied in publication
+sensitivity checks because WMAP normalization depends on the observing and
+cube-build configuration.

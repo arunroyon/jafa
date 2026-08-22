@@ -142,11 +142,10 @@ def fit_continuum(
     ContinuumFit
         Continuum fit products for the input spectrum.
 
-    This follows the original 18.9 um notebook behavior: first estimate a
-    morphology-cleaned baseline-like spectrum with
-    ``pybaselines.morphological.mor`` to suppress narrow emission lines, then
-    fit the final spline continuum to that morphology-cleaned spectrum at the
-    user-defined anchor wavelength samples. The residual is always the original
+    The default mode first estimates a morphology-cleaned baseline-like
+    spectrum with ``pybaselines.morphological.mor`` to suppress narrow emission
+    lines, then fits the final spline continuum to that spectrum at the
+    user-defined anchor wavelength samples. The residual is always the input
     spectrum minus the spline continuum.
     """
 

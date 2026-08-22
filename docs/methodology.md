@@ -8,7 +8,7 @@ This prevents hardcoding a MIRI channel name while still favoring the natural cu
 
 ## Morphology Baseline
 
-The first continuum stage uses `pybaselines.morphological.mor`, following the original fullerene 18.9 um notebook. The morphology baseline is not the final continuum by itself; it is a morphology-cleaned representation used to suppress narrow emission lines before spline fitting. The default morphology half-window is 10 spectral pixels. Broader residual line structure can be tested with larger values through `--morph-half-window` or config YAML. Continuum fitting is performed over the full wavelength span of the selected cube, while integration remains restricted to the feature window.
+The first continuum stage uses `pybaselines.morphological.mor`. The morphology baseline is not the final continuum by itself; it is a morphology-cleaned representation used to suppress narrow emission lines before spline fitting. The default morphology half-window is 10 spectral pixels. Broader residual line structure can be tested with larger values through `--morph-half-window` or config YAML. Continuum fitting is performed over the full wavelength span of the selected cube, while integration remains restricted to the feature window.
 
 NaNs are linearly interpolated for the baseline stage. Spectra with too few finite samples are skipped or assigned NaN outputs.
 
@@ -26,7 +26,7 @@ The residual spectrum is:
 residual = observed spectrum - continuum
 ```
 
-The feature map value is the trapezoidal integral of the residual over the feature window. By default, negative integrated residuals are clipped to zero, preserving the behavior of the original 18.9 um workflow. This can be disabled with `--no-clip-negative`.
+The feature map value is the trapezoidal integral of the residual over the feature window. By default, negative integrated residuals are clipped to zero. This can be disabled with `--no-clip-negative`.
 
 For cubes with a pixel area, flux-density-per-steradian data are multiplied by the pixel area so the map represents integrated flux per pixel. Integer spatial binning is supported by fitting the mean finite spectrum in each bin, then scaling each wavelength slice by the number of finite contributing pixels so partial-NaN bins do not inflate the flux. The integration uses sampled cube wavelengths inside the feature window and does not currently interpolate residual values onto exact window boundaries.
 
@@ -46,6 +46,10 @@ If the maps come from different cubes, the target grid is the coarser/lower-reso
 
 The higher-resolution map is reprojected onto the coarser grid. The lower-resolution map is never upsampled to match the higher-resolution cube.
 
+## Spatial Science Mask
+
+For JWST `s3d` cubes, JAFA preserves the `DQ` and `WMAP` extensions. Voxels flagged `DO_NOT_USE` or `NON_SCIENCE`, zero-weight voxels, and non-finite science values are excluded before fitting. Each map pixel must meet the configured finite coverage in the integration window and across the full feature-plus-anchor span. WMAP is normalized by the valid median in each wavelength plane, then the spatial footprint is filtered by `min_relative_weight` and eroded by `edge_erosion_pixels`.
+
 ## Ratio Calculation
 
 The ratio is:
@@ -54,7 +58,7 @@ The ratio is:
 ratio = numerator_feature_map / denominator_feature_map
 ```
 
-Pixels are masked if either map is non-finite or if the denominator is zero or negative. If uncertainties are present, ratio uncertainty is propagated as:
+Feature science masks are reprojected with nearest-neighbor interpolation and intersected. Pixels are also masked if either map is non-finite or if the denominator is zero or negative. If uncertainties are present, ratio uncertainty is propagated as:
 
 ```text
 sigma_ratio = ratio * sqrt((sigma_num / num)^2 + (sigma_den / den)^2)

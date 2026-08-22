@@ -13,11 +13,12 @@ import numpy as np
 import yaml
 from astropy.constants import c
 from astropy.io import fits
+from scipy.ndimage import binary_erosion
 
 from .continuum import ContinuumSettings, fit_continuum
 from .cube_selection import select_cube_for_feature
 from .feature_db import FeatureDefinition, load_feature_database
-from .io import CubeData, binned_spatial_header, load_cube, save_fits_product
+from .io import DEFAULT_BAD_DQ_BITS, CubeData, binned_spatial_header, load_cube, save_fits_product
 from .plotting import plot_feature_map
 from .stitching import StitchSettings, stitch_adjacent_cubes_for_feature
 from .utils import ensure_dir, finite_fraction, get_logger, sanitize_name
@@ -50,6 +51,19 @@ class MapSettings:
         window.
     max_nan_fraction_warn
         Warn when the output map has more than this fraction of NaNs.
+    min_feature_coverage
+        Minimum fraction of finite wavelength samples required inside the
+        feature integration window.
+    min_required_coverage
+        Minimum fraction of finite samples required across the full feature
+        and continuum-anchor wavelength span.
+    min_relative_weight
+        Minimum median WMAP weight relative to the valid median in each
+        wavelength plane. Set to `None` to disable weight-based masking.
+    edge_erosion_pixels
+        Number of output-grid pixels removed from a detected footprint edge.
+    dq_bad_bits
+        Bit mask of DQ flags rejected before fitting.
     output_unit
         Output unit mode. ``"cgs"`` integrates flux density over frequency and
         writes ``erg s-1 cm-2 pixel-1`` maps. ``"native"`` preserves the older
@@ -68,6 +82,11 @@ class MapSettings:
     progress: bool = True
     write_continuum_map: bool = True
     max_nan_fraction_warn: float = 0.5
+    min_feature_coverage: float = 0.95
+    min_required_coverage: float = 0.95
+    min_relative_weight: float | None = 0.25
+    edge_erosion_pixels: int = 1
+    dq_bad_bits: int = int(DEFAULT_BAD_DQ_BITS)
     output_unit: str = "cgs"
     allow_cube_stitching: bool = True
     stitching: StitchSettings = field(default_factory=StitchSettings)
@@ -81,16 +100,22 @@ class MapSettings:
             "bin_spatial",
             "clip_negative_residuals",
             "continuum_mode",
+            "dq_bad_bits",
+            "edge_erosion_pixels",
             "fallback_anchor_count",
             "include_edge_anchors",
             "max_nan_fraction_warn",
+            "min_feature_coverage",
             "min_anchor_points",
             "min_finite",
+            "min_relative_weight",
+            "min_required_coverage",
             "mode",
             "morph_half_window",
             "output_unit",
             "snr_threshold",
             "stitch_overlap_strategy",
+            "stitch_min_spatial_coverage",
             "stitch_reprojection_method",
             "stitch_require_common_spatial_footprint",
             "stitch_spectral_gap_tolerance_um",
@@ -114,6 +139,16 @@ class MapSettings:
             settings.write_continuum_map = bool(payload["write_continuum_map"])
         if "max_nan_fraction_warn" in payload:
             settings.max_nan_fraction_warn = float(payload["max_nan_fraction_warn"])
+        if "min_feature_coverage" in payload:
+            settings.min_feature_coverage = float(payload["min_feature_coverage"])
+        if "min_required_coverage" in payload:
+            settings.min_required_coverage = float(payload["min_required_coverage"])
+        if "min_relative_weight" in payload:
+            settings.min_relative_weight = None if payload["min_relative_weight"] is None else float(payload["min_relative_weight"])
+        if "edge_erosion_pixels" in payload:
+            settings.edge_erosion_pixels = int(payload["edge_erosion_pixels"])
+        if "dq_bad_bits" in payload:
+            settings.dq_bad_bits = int(payload["dq_bad_bits"])
         if "output_unit" in payload:
             settings.output_unit = str(payload["output_unit"])
         if "allow_cube_stitching" in payload:
@@ -130,6 +165,18 @@ class MapSettings:
             raise ValueError("output_unit must be 'cgs' or 'native'.")
         if self.max_nan_fraction_warn < 0 or self.max_nan_fraction_warn > 1:
             raise ValueError("max_nan_fraction_warn must be between 0 and 1.")
+        for name, value in (
+            ("min_feature_coverage", self.min_feature_coverage),
+            ("min_required_coverage", self.min_required_coverage),
+        ):
+            if value < 0 or value > 1:
+                raise ValueError(f"{name} must be between 0 and 1.")
+        if self.min_relative_weight is not None and self.min_relative_weight < 0:
+            raise ValueError("min_relative_weight must be >= 0 or None.")
+        if self.edge_erosion_pixels < 0:
+            raise ValueError("edge_erosion_pixels must be >= 0.")
+        if self.dq_bad_bits < 0:
+            raise ValueError("dq_bad_bits must be >= 0.")
         self.continuum.validate()
         self.stitching.validate()
 
@@ -171,6 +218,9 @@ class FeatureMapResult:
     unit: str
     diagnostic: dict[str, np.ndarray]
     metadata: dict
+    valid_mask: np.ndarray | None = None
+    coverage_map: np.ndarray | None = None
+    relative_weight_map: np.ndarray | None = None
     output_paths: dict[str, Path] = field(default_factory=dict)
 
 
@@ -227,10 +277,13 @@ def make_feature_map_from_cube(cube: CubeData, feature: FeatureDefinition, *, se
         raise ValueError(f"Feature window for {feature.feature_name} has fewer than two spectral samples.")
 
     wavelengths = cube.wavelength_um[finite_wave_mask]
-    data = cube.data[finite_wave_mask, :, :]
+    voxel_valid = cube.valid_voxel_mask(bad_dq_bits=settings.dq_bad_bits)[finite_wave_mask, :, :]
+    data = np.where(voxel_valid, cube.data[finite_wave_mask, :, :], np.nan)
     uncertainty = cube.uncertainty[finite_wave_mask, :, :] if cube.uncertainty is not None else None
     local_wave_mask = _feature_mask(wavelengths, feature.integration_window)
     fit_feature, ignored_anchor_points = _feature_with_usable_anchor_points(feature, wavelengths, cube)
+    required_wave_mask = _feature_mask(wavelengths, fit_feature.required_window)
+    relative_weights = _relative_weight_cube(cube.weight[finite_wave_mask, :, :] if cube.weight is not None else None, voxel_valid)
 
     ny, nx = cube.spatial_shape
     bin_size = settings.bin_spatial
@@ -238,6 +291,9 @@ def make_feature_map_from_cube(cube: CubeData, feature: FeatureDefinition, *, se
     fmap = np.full((out_ny, out_nx), np.nan, dtype=float)
     unc_map = np.full_like(fmap, np.nan) if uncertainty is not None else None
     cont_map = np.full_like(fmap, np.nan) if settings.write_continuum_map else None
+    coverage_map = np.full_like(fmap, np.nan)
+    relative_weight_map = np.full_like(fmap, np.nan) if relative_weights is not None else None
+    support_mask = np.zeros_like(fmap, dtype=bool)
 
     iterator = ((iy, ix) for iy in range(out_ny) for ix in range(out_nx))
     total = out_ny * out_nx
@@ -247,6 +303,27 @@ def make_feature_map_from_cube(cube: CubeData, feature: FeatureDefinition, *, se
         xs = slice(ix * bin_size, (ix + 1) * bin_size)
         block = data[:, ys, xs]
         finite_counts = np.count_nonzero(np.isfinite(block), axis=(1, 2)).astype(float)
+        wavelength_has_data = finite_counts > 0
+        feature_coverage = float(np.mean(wavelength_has_data[local_wave_mask]))
+        required_coverage = float(np.mean(wavelength_has_data[required_wave_mask]))
+        coverage_map[iy, ix] = min(feature_coverage, required_coverage)
+
+        relative_weight = np.nan
+        if relative_weights is not None and relative_weight_map is not None:
+            weight_block = relative_weights[required_wave_mask, ys, xs]
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                relative_weight = float(np.nanmedian(weight_block))
+            relative_weight_map[iy, ix] = relative_weight
+
+        coverage_ok = feature_coverage >= settings.min_feature_coverage and required_coverage >= settings.min_required_coverage
+        weight_ok = settings.min_relative_weight is None or relative_weights is None or (
+            np.isfinite(relative_weight) and relative_weight >= settings.min_relative_weight
+        )
+        if not coverage_ok or not weight_ok:
+            continue
+        support_mask[iy, ix] = True
+
         spectral_sum = np.nansum(block, axis=(1, 2))
         spectrum = np.divide(spectral_sum, finite_counts, out=np.full(data.shape[0], np.nan), where=finite_counts > 0)
         if not np.isfinite(spectrum).any():
@@ -303,11 +380,20 @@ def make_feature_map_from_cube(cube: CubeData, feature: FeatureDefinition, *, se
                 output_unit=settings.output_unit,
             )
 
+    pre_erosion_mask = support_mask & np.isfinite(fmap)
+    should_erode = cube.weight is not None or cube.dq is not None or not np.all(pre_erosion_mask)
+    eroded_mask = _erode_mask(pre_erosion_mask, settings.edge_erosion_pixels) if should_erode else pre_erosion_mask
+    valid_mask = eroded_mask.copy()
+
     if settings.snr_threshold is not None and unc_map is not None:
         snr = np.divide(fmap, unc_map, out=np.full_like(fmap, np.nan), where=unc_map > 0)
-        fmap[snr < settings.snr_threshold] = np.nan
-        if cont_map is not None:
-            cont_map[snr < settings.snr_threshold] = np.nan
+        valid_mask &= snr >= settings.snr_threshold
+
+    fmap[~valid_mask] = np.nan
+    if unc_map is not None:
+        unc_map[~valid_mask] = np.nan
+    if cont_map is not None:
+        cont_map[~valid_mask] = np.nan
 
     nan_fraction = 1.0 - finite_fraction(fmap)
     if nan_fraction > settings.max_nan_fraction_warn:
@@ -316,7 +402,23 @@ def make_feature_map_from_cube(cube: CubeData, feature: FeatureDefinition, *, se
     header = binned_spatial_header(cube.spatial_header, bin_size)
     unit = _integrated_unit(cube.flux_unit, cube.pixel_area_sr is not None, settings.output_unit)
     diagnostic = _diagnostic_fit(cube, feature, fit_feature, finite_wave_mask, wavelengths, settings, continuum_settings)
-    metadata = _metadata(cube, feature, settings, unit, ignored_anchor_points, continuum_mode=continuum_settings.mode)
+    metadata = _metadata(
+        cube,
+        feature,
+        settings,
+        unit,
+        ignored_anchor_points,
+        continuum_mode=continuum_settings.mode,
+        mask_summary={
+            "pixels_total": int(valid_mask.size),
+            "pixels_before_erosion": int(np.count_nonzero(pre_erosion_mask)),
+            "pixels_valid": int(np.count_nonzero(valid_mask)),
+            "pixels_removed_by_erosion": int(np.count_nonzero(pre_erosion_mask & ~eroded_mask)),
+            "pixels_removed_by_snr": int(np.count_nonzero(eroded_mask & ~valid_mask)),
+            "has_dq": cube.dq is not None,
+            "has_weight_map": cube.weight is not None,
+        },
+    )
 
     return FeatureMapResult(
         feature=feature,
@@ -328,6 +430,9 @@ def make_feature_map_from_cube(cube: CubeData, feature: FeatureDefinition, *, se
         unit=unit,
         diagnostic=diagnostic,
         metadata=metadata,
+        valid_mask=valid_mask,
+        coverage_map=coverage_map,
+        relative_weight_map=relative_weight_map,
     )
 
 
@@ -348,6 +453,18 @@ def write_feature_map_outputs(result: FeatureMapResult, outdir: str | Path) -> d
         paths["uncertainty"] = save_fits_product(result.uncertainty, result.header, outdir / f"{stem}_unc.fits", bunit=result.unit, metadata=common_meta)
     if result.continuum_map is not None:
         paths["continuum"] = save_fits_product(result.continuum_map, result.header, outdir / f"{stem}_continuum.fits", bunit=result.unit, metadata=common_meta)
+    if result.valid_mask is not None:
+        paths["mask"] = save_fits_product(result.valid_mask.astype(np.uint8), result.header, outdir / f"{stem}_mask.fits", bunit="mask", metadata=common_meta)
+    if result.coverage_map is not None:
+        paths["coverage"] = save_fits_product(result.coverage_map, result.header, outdir / f"{stem}_coverage.fits", bunit="fraction", metadata=common_meta)
+    if result.relative_weight_map is not None:
+        paths["relative_weight"] = save_fits_product(
+            result.relative_weight_map,
+            result.header,
+            outdir / f"{stem}_relative_weight.fits",
+            bunit="relative",
+            metadata=common_meta,
+        )
     paths["diagnostic"] = plot_feature_map(
         result.feature_map,
         result.uncertainty,
@@ -391,6 +508,37 @@ def _feature_mask(wavelengths: np.ndarray, window: tuple[float, float]) -> np.nd
     wavelengths = _wavelength_values_um(wavelengths)
     lo, hi = min(window), max(window)
     return (wavelengths >= lo) & (wavelengths <= hi)
+
+
+def _relative_weight_cube(weight: np.ndarray | None, valid: np.ndarray) -> np.ndarray | None:
+    """Normalize cube-build weights by the valid median in each wavelength plane."""
+
+    if weight is None:
+        return None
+    values = np.asarray(weight, dtype=float)
+    usable = valid & np.isfinite(values) & (values > 0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        plane_median = np.nanmedian(np.where(usable, values, np.nan), axis=(1, 2))
+    return np.divide(
+        values,
+        plane_median[:, None, None],
+        out=np.full_like(values, np.nan),
+        where=usable & (plane_median[:, None, None] > 0),
+    )
+
+
+def _erode_mask(mask: np.ndarray, pixels: int) -> np.ndarray:
+    """Erode a science footprint while avoiding an accidental empty product."""
+
+    valid = np.asarray(mask, dtype=bool)
+    if pixels <= 0 or not np.any(valid):
+        return valid.copy()
+    eroded = binary_erosion(valid, structure=np.ones((3, 3), dtype=bool), iterations=pixels, border_value=0)
+    if not np.any(eroded):
+        LOG.warning("Edge erosion of %d pixel(s) would remove the full map; retaining the un-eroded footprint.", pixels)
+        return valid.copy()
+    return eroded
 
 
 def _integrate(wavelengths: np.ndarray, values: np.ndarray) -> float:
@@ -636,6 +784,7 @@ def _metadata(
     ignored_anchor_points: tuple[float, ...] = (),
     *,
     continuum_mode: str | None = None,
+    mask_summary: dict[str, Any] | None = None,
 ) -> dict:
     return {
         "software": {"name": "JAFA", "full_name": "JWST Aromatic Feature Analyzer", "package": "jafa", "version": __version__},
@@ -652,6 +801,8 @@ def _metadata(
             "stitch_overlap_strategy": cube.stitch_overlap_strategy,
             "stitch_overlap_ranges_um": [list(item) for item in cube.stitch_overlap_ranges_um],
             "stitch_common_footprint_fraction": cube.stitch_common_footprint_fraction,
+            "has_dq": cube.dq is not None,
+            "has_weight_map": cube.weight is not None,
         },
         "feature": feature.to_metadata(),
         "ignored_anchor_points_um": list(ignored_anchor_points),
@@ -665,6 +816,11 @@ def _metadata(
             "snr_threshold": settings.snr_threshold,
             "clip_negative_residuals": settings.clip_negative_residuals,
             "bin_spatial": settings.bin_spatial,
+            "dq_bad_bits": settings.dq_bad_bits,
+            "min_feature_coverage": settings.min_feature_coverage,
+            "min_required_coverage": settings.min_required_coverage,
+            "min_relative_weight": settings.min_relative_weight,
+            "edge_erosion_pixels": settings.edge_erosion_pixels,
             "continuum_fit_span": "full_cube",
             "output_unit_mode": settings.output_unit,
             "spectral_integration": "frequency_integral_exact" if settings.output_unit == "cgs" else "wavelength_integral_native",
@@ -672,7 +828,9 @@ def _metadata(
             "stitch_target_grid": settings.stitching.target_grid,
             "stitch_spectral_gap_tolerance_um": settings.stitching.spectral_gap_tolerance_um,
             "stitch_overlap_strategy": settings.stitching.overlap_strategy,
+            "stitch_min_spatial_coverage": settings.stitching.min_spatial_coverage,
             "stitch_require_common_spatial_footprint": settings.stitching.require_common_spatial_footprint,
         },
+        "masking": mask_summary or {},
         "output_unit": unit,
     }

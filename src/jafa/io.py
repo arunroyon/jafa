@@ -16,6 +16,10 @@ from .utils import get_logger, require_dependency
 
 LOG = get_logger(__name__)
 
+JWST_DO_NOT_USE = np.uint32(1)
+JWST_NON_SCIENCE = np.uint32(512)
+DEFAULT_BAD_DQ_BITS = JWST_DO_NOT_USE | JWST_NON_SCIENCE
+
 
 @dataclass
 class CubeData:
@@ -32,6 +36,11 @@ class CubeData:
         converted to microns.
     uncertainty
         Optional uncertainty cube ordered like ``data``.
+    dq
+        Optional bit-encoded data-quality cube ordered like ``data``.
+    weight
+        Optional cube-build weight map (the JWST ``WMAP`` extension) ordered
+        like ``data``.
     wcs_3d, wcs_2d, header
         Full cube WCS, celestial WCS, and science FITS header.
     flux_unit, uncertainty_unit
@@ -59,6 +68,8 @@ class CubeData:
     data: np.ndarray
     wavelength_um: np.ndarray
     uncertainty: np.ndarray | None = None
+    dq: np.ndarray | None = None
+    weight: np.ndarray | None = None
     wcs_3d: WCS | None = None
     wcs_2d: WCS | None = None
     header: fits.Header | None = None
@@ -82,6 +93,27 @@ class CubeData:
         self.data = np.asarray(self.data, dtype=float)
         if self.uncertainty is not None:
             self.uncertainty = np.asarray(self.uncertainty, dtype=float)
+        if self.dq is not None:
+            self.dq = np.asarray(self.dq, dtype=np.uint32)
+        if self.weight is not None:
+            self.weight = np.asarray(self.weight, dtype=float)
+        if self.data.ndim != 3:
+            raise ValueError("Cube data must have shape (spectral, y, x).")
+        if self.wavelength_um.size != self.data.shape[0]:
+            raise ValueError("Wavelength axis length must match the cube spectral dimension.")
+        for name, values in (("uncertainty", self.uncertainty), ("dq", self.dq), ("weight", self.weight)):
+            if values is not None and values.shape != self.data.shape:
+                raise ValueError(f"Cube {name} shape {values.shape} does not match science shape {self.data.shape}.")
+
+    def valid_voxel_mask(self, *, bad_dq_bits: int = int(DEFAULT_BAD_DQ_BITS)) -> np.ndarray:
+        """Return voxels with finite science data and usable cube-build quality."""
+
+        valid = np.isfinite(self.data)
+        if self.dq is not None:
+            valid &= (self.dq & np.uint32(bad_dq_bits)) == 0
+        if self.weight is not None:
+            valid &= np.isfinite(self.weight) & (self.weight > 0)
+        return valid
 
     @property
     def wavelength(self) -> u.Quantity:
@@ -160,8 +192,9 @@ def load_cube(path: str | Path, *, use_spectral_cube: bool = True) -> CubeData:
     """Load a JWST-style IFU cube from FITS.
 
     The returned data are always sorted by increasing wavelength and arranged as
-    ``(spectral, y, x)``. JWST ``SCI`` and ``ERR`` extensions are preferred, but
-    the loader falls back to the first 3D image extension.
+    ``(spectral, y, x)``. JWST ``SCI``, ``ERR``, ``DQ``, and ``WMAP``
+    extensions are preserved when present, while the loader falls back to the
+    first 3D image extension for simple cubes.
 
     Parameters
     ----------
@@ -199,12 +232,26 @@ def load_cube(path: str | Path, *, use_spectral_cube: bool = True) -> CubeData:
             uncertainty = _match_shape(np.asarray(hdul[err_index].data, dtype=float), data.shape)
             uncertainty_unit = str(hdul[err_index].header.get("BUNIT", header.get("BUNIT", "")))
 
+        dq_index = _find_image_hdu(hdul, preferred_names=("DQ",), ndim=3, required=False)
+        dq = None
+        if dq_index is not None:
+            dq = _match_shape(np.asarray(hdul[dq_index].data, dtype=np.uint32), data.shape)
+
+        weight_index = _find_image_hdu(hdul, preferred_names=("WMAP", "WEIGHT", "WHT"), ndim=3, required=False)
+        weight = None
+        if weight_index is not None:
+            weight = _match_shape(np.asarray(hdul[weight_index].data, dtype=float), data.shape)
+
         if not np.all(np.diff(wavelength_um) > 0):
             order = np.argsort(wavelength_um)
             wavelength_um = wavelength_um[order]
             data = data[order, :, :]
             if uncertainty is not None:
                 uncertainty = uncertainty[order, :, :]
+            if dq is not None:
+                dq = dq[order, :, :]
+            if weight is not None:
+                weight = weight[order, :, :]
 
         pixel_area_sr = _pixel_area_sr(header, wcs_3d)
 
@@ -212,6 +259,8 @@ def load_cube(path: str | Path, *, use_spectral_cube: bool = True) -> CubeData:
             path=path,
             data=data,
             uncertainty=uncertainty,
+            dq=dq,
+            weight=weight,
             wavelength_um=wavelength_um,
             wcs_3d=wcs_3d,
             wcs_2d=wcs_3d.celestial,
@@ -248,7 +297,7 @@ def save_fits_product(
                 out_header[fits_key] = value
             except Exception:
                 continue
-    fits.PrimaryHDU(data=np.asarray(data, dtype=float), header=out_header).writeto(output_path, overwrite=overwrite)
+    fits.PrimaryHDU(data=np.asarray(data), header=out_header).writeto(output_path, overwrite=overwrite)
     LOG.info("Saved FITS product: %s", output_path)
     return output_path
 
@@ -295,7 +344,7 @@ def _find_image_hdu(
         extname = str(hdu.header.get("EXTNAME", "")).upper()
         if extname in preferred:
             return idx
-    if candidates:
+    if candidates and required:
         return candidates[0]
     if required:
         raise ValueError(f"No {ndim}D image extension found in FITS file.")

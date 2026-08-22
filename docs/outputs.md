@@ -7,6 +7,9 @@ For each feature, the package writes:
 - `<feature>_map.fits`: continuum-subtracted integrated feature map.
 - `<feature>_unc.fits`: integrated uncertainty map when an uncertainty cube is available.
 - `<feature>_continuum.fits`: integrated fitted continuum over the same feature window.
+- `<feature>_mask.fits`: final spatial science mask, with retained pixels set to one.
+- `<feature>_coverage.fits`: minimum feature-window and anchor-span spectral coverage.
+- `<feature>_relative_weight.fits`: wavelength-normalized WMAP support when available.
 - `<feature>_diagnostic.png`: feature map, uncertainty map, and median-spectrum continuum diagnostic.
 - `<feature>_metadata.yaml`: input cube, feature definition, settings, units, and software version.
 
@@ -16,6 +19,7 @@ For each ratio, the package writes:
 
 - `<feature1>_over_<feature2>_ratio.fits`
 - `<feature1>_over_<feature2>_ratio_unc.fits` when both feature uncertainties are available
+- `<feature1>_over_<feature2>_mask.fits`
 - `<feature1>_over_<feature2>_ratio.png`
 - `<feature1>_over_<feature2>_metadata.yaml`
 
